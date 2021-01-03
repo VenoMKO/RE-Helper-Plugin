@@ -5,8 +5,6 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 
-#include "REMaterialCreator.h"
-
 class FREHelperModule : public IModuleInterface
 {
 public:
@@ -20,9 +18,7 @@ public:
 	
 private:
 	void RegisterMenus();
-	void CreateMaterials(const FString& path);
 
 private:
 	TSharedPtr<class FUICommandList> PluginCommands;
-	REMaterialCreator MaterialCreator;
 };
