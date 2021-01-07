@@ -24,6 +24,7 @@ void FREHelperModule::StartupModule()
   FREHelperStyle::ReloadTextures();
   FREHelperCommands::Register();
   PluginCommands = MakeShareable(new FUICommandList);
+  PluginCommands->MapAction(FREHelperCommands::Get().FixTextures, FExecuteAction::CreateRaw(this, &FREHelperModule::OnFixTexturesClicked), FCanExecuteAction());
   PluginCommands->MapAction(FREHelperCommands::Get().ImportMaterials, FExecuteAction::CreateRaw(this, &FREHelperModule::OnImportMaterialsClicked), FCanExecuteAction());
   PluginCommands->MapAction(FREHelperCommands::Get().AssignDefaults, FExecuteAction::CreateRaw(this, &FREHelperModule::OnAssignDefaultsClicked), FCanExecuteAction());
   PluginCommands->MapAction(FREHelperCommands::Get().ImportActors, FExecuteAction::CreateRaw(this, &FREHelperModule::OnImportActorsClicked), FCanExecuteAction());
@@ -166,6 +167,48 @@ void FREHelperModule::OnImportActorsClicked()
   }
 }
 
+void FREHelperModule::OnFixTexturesClicked()
+{
+  if (IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get())
+  {
+    TArray<FString> FilePaths;
+    FString Filter = TEXT("Real Editors textures|Textures.txt");
+    if (DesktopPlatform->OpenFileDialog(nullptr, TEXT("Open Real Editor's texture output..."), TEXT(""), TEXT("Textures.txt"), Filter, EFileDialogFlags::None, FilePaths) && FilePaths.Num())
+    {
+      FScopedTransaction Transaction(NSLOCTEXT("REHelper", "FixTextures", "Fix imported textures"));
+      FString ErrorMessage;
+      int32 Num = REWorker::FixTextures(FilePaths[0], ErrorMessage);
+
+      FText Title;
+      FText Message;
+      if (Num < 0)
+      {
+        Title = FText::FromString(TEXT("Error!"));
+        Message = FText::FromString(ErrorMessage);
+      }
+      else if (Num == 0)
+      {
+        if (ErrorMessage.Len())
+        {
+          Title = FText::FromString(TEXT("Error!"));
+          Message = FText::FromString(TEXT("Failed to process any assets.") + ErrorMessage);
+        }
+        else
+        {
+          Title = FText::FromString(TEXT("There are no textures in from the list!"));
+          Message = FText::FromString(TEXT("Make sure you've selected a correct Textures.txt file."));
+        }
+      }
+      else
+      {
+        Title = FText::FromString(TEXT("Done!"));
+        Message = FText::FromString(FString::Printf(TEXT("Processed %d textures."), Num) + ErrorMessage);
+      }
+      FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
+    }
+  }
+}
+
 void FREHelperModule::RegisterMenus()
 {
   FToolMenuOwnerScoped OwnerScoped(this);
@@ -176,6 +219,7 @@ void FREHelperModule::RegisterMenus()
       {
         auto MenuBuilder = FNewToolMenuDelegate::CreateLambda([&](UToolMenu* InSubMenu) {
           FToolMenuSection& SubMenuSection = InSubMenu->AddSection("Section", LOCTEXT("REHelperPlugin", "RE Helper"));
+          SubMenuSection.AddMenuEntry(FREHelperCommands::Get().FixTextures).SetCommandList(PluginCommands);
           SubMenuSection.AddMenuEntry(FREHelperCommands::Get().ImportMaterials).SetCommandList(PluginCommands);
           SubMenuSection.AddMenuEntry(FREHelperCommands::Get().AssignDefaults).SetCommandList(PluginCommands);
           SubMenuSection.AddMenuEntry(FREHelperCommands::Get().ImportActors).SetCommandList(PluginCommands);

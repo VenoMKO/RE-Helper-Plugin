@@ -22,4 +22,5 @@ public:
 	TSharedPtr<FUICommandInfo> ImportMaterials;
 	TSharedPtr<FUICommandInfo> AssignDefaults;
 	TSharedPtr<FUICommandInfo> ImportActors;
+	TSharedPtr<FUICommandInfo> FixTextures;
 };

@@ -20,6 +20,7 @@
 #include "Materials/MaterialExpressionTextureSampleParameterCube.h"
 
 #include "Misc/FileHelper.h"
+#include "Misc/ScopedSlowTask.h"
 #include "AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
@@ -205,6 +206,53 @@ struct RMaterial {
   }
 };
 
+struct RTexture {
+  FString Name;
+  FString Compression;
+  FString Source;
+  bool SRGB = false;
+  bool IsDXT = false;
+
+  bool ReadFromLine(const FString& Line)
+  {
+    int32 Pos1 = Line.Find(VSEP);
+    if (Pos1 == INDEX_NONE)
+    {
+      return false;
+    }
+    Compression = Line.Mid(0, Pos1);
+    uint32 Pos2 = Line.Find(VSEP, ESearchCase::IgnoreCase, ESearchDir::FromStart, Pos1 + 1);
+    if (Pos2 == INDEX_NONE)
+    {
+      return false;
+    }
+    {
+      FString Value = Line.Mid(Pos1 + 1, Pos2 - Pos1 - 1);
+      SRGB = FCString::ToBool(*Value);
+    }
+    Pos1 = Pos2;
+    Pos2 = Line.Find(VSEP, ESearchCase::IgnoreCase, ESearchDir::FromStart, Pos1 + 1);
+    if (Pos2 == INDEX_NONE)
+    {
+      return false;
+    }
+    {
+      FString Value = Line.Mid(Pos1 + 1, Pos2 - Pos1 - 1);
+      IsDXT = FCString::ToBool(*Value);
+    }
+    Pos1 = Pos2;
+    Pos2 = Line.Find(VSEP, ESearchCase::IgnoreCase, ESearchDir::FromStart, Pos1 + 1);
+    if (Pos2 == INDEX_NONE)
+    {
+      return false;
+    }
+    Name = Line.Mid(Pos1 + 1, Pos2 - Pos1 - 1);
+    Pos1 = Pos2;
+    Source = Line.Mid(Pos1 + 1);
+    return Name.Len() > 0 && Source.Len() > 0;
+  }
+};
+
 int32 REWorker::ImportMaterials(const FString& Path, FString& OutError)
 {
   TArray<FString> Lines;
@@ -220,7 +268,7 @@ int32 REWorker::ImportMaterials(const FString& Path, FString& OutError)
   {
     if (Lines[Idx].StartsWith(TEXT(" ")))
     {
-      // If RMaterial::ReadFromArray failed Idx may not be correct. Find material next entry
+      // If RMaterial::ReadFromArray failed Idx may not be correct. Find next entry
       continue;
     }
 
@@ -241,6 +289,8 @@ int32 REWorker::ImportMaterials(const FString& Path, FString& OutError)
     return -1;
   }
 
+  FScopedSlowTask Task((float)Materials.Num(), NSLOCTEXT("REHelper", "ImportMaterials", "Importing materials..."));
+  Task.MakeDialog();
 
   // Link parents and create master materials
   int32 Result = 0;
@@ -249,6 +299,7 @@ int32 REWorker::ImportMaterials(const FString& Path, FString& OutError)
   {
     if (!Material.ParentName.Len())
     {
+      Task.EnterProgressFrame(1.f, FText::FromString(TEXT("Importing: ") + Material.Name));
       // Material is a MasterMaterial. Check if it does not exist and create it.
       UMaterial* Asset = FindResource<UMaterial>(Material.Name);
       if (!Asset)
@@ -270,6 +321,7 @@ int32 REWorker::ImportMaterials(const FString& Path, FString& OutError)
           OutError = TEXT("Some errors occured. See the Output Log for details.");
         }
       }
+      Material.UnrealMaterial = Asset;
       continue;
     }
 
@@ -294,6 +346,7 @@ int32 REWorker::ImportMaterials(const FString& Path, FString& OutError)
       // Master Material
       continue;
     }
+    Task.EnterProgressFrame(1.f, FText::FromString(TEXT("Importing: ") + Material.Name));
     Result += CreateMaterialInstance(&Material, MiFactory, AnyMiErrors);
   }
   if (AnyMiErrors)
@@ -313,9 +366,13 @@ int32 REWorker::AssignDefaultMaterials(const FString& Path, FString& OutError)
     return -1;
   }
 
+  FScopedSlowTask Task((float)Items.Num(), NSLOCTEXT("REHelper", "AssigningMaterials", "Assigning defaults..."));
+  Task.MakeDialog();
+
   int32 Result = 0;
   for (int32 Idx = 0; Idx < Items.Num(); ++Idx)
   {
+    Task.EnterProgressFrame(1.f);
     if (Items[Idx].StartsWith(TEXT(" ")))
     {
       continue;
@@ -370,6 +427,68 @@ int32 REWorker::AssignDefaultMaterials(const FString& Path, FString& OutError)
         Result++;
         StaticMesh->PostEditChange();
       }
+    }
+  }
+  return Result;
+}
+
+int32 REWorker::FixTextures(const FString& Path, FString& OutError)
+{
+  TArray<FString> Lines;
+  FFileHelper::LoadFileToStringArray(Lines, *Path);
+  
+
+  TArray<RTexture> Textures;
+  for (const FString& Line : Lines)
+  {
+    RTexture Texture;
+    if (Texture.ReadFromLine(Line))
+    {
+      Textures.Add(Texture);
+    }
+  }
+
+  if (!Textures.Num())
+  {
+    OutError = TEXT("The file appears to be empty!");
+    return -1;
+  }
+
+  FScopedSlowTask Task((float)Textures.Num(), NSLOCTEXT("REHelper", "FixTextures", "Fixing textures..."));
+  Task.MakeDialog();
+
+  int32 Result = 0;
+  for (const RTexture& Texture : Textures)
+  {
+    // TODO: import the asset?
+    if (UTexture* Asset = FindResource<UTexture>(Texture.Name))
+    {
+      if (Texture.Compression == TEXT("TC_Grayscale"))
+      {
+        Asset->CompressionSettings = TC_Grayscale;
+        Asset->SRGB = false;
+      }
+      else if (Texture.Compression.StartsWith(TEXT("TC_Normalmap")))
+      {
+        Asset->CompressionSettings = TC_Normalmap;
+        Asset->SRGB = false;
+      }
+      else if (!Texture.IsDXT)
+      {
+        Asset->CompressionSettings = TC_Masks;
+        Asset->SRGB = false;
+      }
+      else
+      {
+        Asset->CompressionSettings = TC_Default;
+        Asset->SRGB = Texture.SRGB;
+      }
+      Asset->PostEditChange();
+      Asset->GetPackage()->SetDirtyFlag(true);
+      FAssetRegistryModule::AssetCreated(Asset);
+      Task.EnterProgressFrame(1.f);
+      Result++;
+      continue;
     }
   }
   return Result;
@@ -540,7 +659,15 @@ void REWorker::SetupMasterMaterial(UMaterial* UnrealMaterial, RMaterial* RealMat
     }
     else if (Texture->CompressionSettings == TC_Grayscale)
     {
-      Param->SamplerType = SAMPLERTYPE_Grayscale;
+      Param->SamplerType = Texture->SRGB ? SAMPLERTYPE_Grayscale : SAMPLERTYPE_LinearGrayscale;
+    }
+    else if (Texture->CompressionSettings == TC_Masks)
+    {
+      Param->SamplerType = SAMPLERTYPE_Masks;
+    }
+    else
+    {
+      Param->SamplerType = Texture->SRGB ? SAMPLERTYPE_Color : SAMPLERTYPE_LinearColor;
     }
   }
 
@@ -584,7 +711,7 @@ void REWorker::SetupMasterMaterial(UMaterial* UnrealMaterial, RMaterial* RealMat
     Input = &Add->B;
 
     Param->Texture = Texture;
-    Param->SamplerType = SAMPLERTYPE_Grayscale;
+    Param->SamplerType = Texture->SRGB ? SAMPLERTYPE_Grayscale : SAMPLERTYPE_LinearGrayscale;
   }
 
   for (const auto& P : RealMaterial->ScalarParameters)

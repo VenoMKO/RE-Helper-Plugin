@@ -10,6 +10,8 @@ public:
   static int32 ImportMaterials(const FString& Path, FString& OutError);
   // Load RE material map and assign existing materials to mesh assets. Returns number of modified assets or -1 on error.
   static int32 AssignDefaultMaterials(const FString& Path, FString& OutError);
+  // Apply correct compression settings and SRGB flag to textures. Returns number of modified assets or -1 on error.
+  static int32 FixTextures(const FString& Path, FString& OutError);
 
 private:
   // Create and connect parameters

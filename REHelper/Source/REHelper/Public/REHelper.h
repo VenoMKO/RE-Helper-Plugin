@@ -11,10 +11,11 @@ public:
 	void OnImportMaterialsClicked();
 	void OnAssignDefaultsClicked();
 	void OnImportActorsClicked();
+	void OnFixTexturesClicked();
 
 	/** IModuleInterface implementation */
-	virtual void StartupModule() override;
-	virtual void ShutdownModule() override;
+	void StartupModule() override;
+	void ShutdownModule() override;
 	
 private:
 	void RegisterMenus();
