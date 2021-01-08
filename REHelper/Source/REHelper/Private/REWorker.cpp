@@ -26,6 +26,7 @@
 #include "IAssetTools.h"
 #include "PackageTools.h"
 #include "Engine/TextureCube.h"
+#include "Engine/StaticMeshActor.h"
 
 namespace
 {
@@ -388,6 +389,7 @@ int32 REWorker::AssignDefaultMaterials(const FString& Path, FString& OutError)
     }
 
     TArray<UMaterialInterface*> Defaults;
+    TArray<UMaterialInterface*> Leafs;
     while (++Idx < Items.Num())
     {
       if (!Items[Idx].StartsWith(TEXT(" ")))
@@ -406,22 +408,58 @@ int32 REWorker::AssignDefaultMaterials(const FString& Path, FString& OutError)
         UE_LOG(LogTemp, Error, TEXT("RE Helper: Failed to find Material \"%s\" for object \"%s\""), *MaterialName, *Name);
         OutError = TEXT("Some errors occured. See the Output Log for details.");
       }
-      Defaults.Add(Material);
+      if (MaterialName.EndsWith(TEXT("_leafs")))
+      {
+        Leafs.Add(Material);
+      }
+      else
+      {
+        Defaults.Add(Material);
+      }
     }
-
     Idx--;
 
     if (UStaticMesh* StaticMesh = Cast<UStaticMesh>(Asset))
     {
+      FString MeshName;
+      StaticMesh->GetName(MeshName);
       bool AnyChanges = false;
-      for (int32 MatIdx = 0; MatIdx < StaticMesh->StaticMaterials.Num(); ++MatIdx)
+      int32 MatIdx = 0;
+      for (UMaterialInterface* Material : Defaults)
       {
-        if (MatIdx < Defaults.Num() && Defaults[MatIdx])
+        FString MatName;
+        Material->GetName(MatName);
+        for (; MatIdx < StaticMesh->StaticMaterials.Num(); ++MatIdx)
         {
-          StaticMesh->StaticMaterials[MatIdx].MaterialInterface = Defaults[MatIdx];
-          AnyChanges = true;
+          FString SlotName = StaticMesh->StaticMaterials[MatIdx].MaterialSlotName.ToString();
+          if (!SlotName.EndsWith(TEXT("_leafs")))
+          {
+            StaticMesh->StaticMaterials[MatIdx].MaterialInterface = Material;
+            AnyChanges = true;
+            MatIdx++;
+            break;
+          }
         }
       }
+
+      MatIdx = 0;
+      for (UMaterialInterface* Material : Leafs)
+      {
+        FString MatName;
+        Material->GetName(MatName);
+        for (; MatIdx < StaticMesh->StaticMaterials.Num(); ++MatIdx)
+        {
+          FString SlotName = StaticMesh->StaticMaterials[MatIdx].MaterialSlotName.ToString();
+          if (SlotName.EndsWith(TEXT("_leafs")))
+          {
+            StaticMesh->StaticMaterials[MatIdx].MaterialInterface = Material;
+            AnyChanges = true;
+            MatIdx++;
+            break;
+          }
+        }
+      }
+
       if (AnyChanges)
       {
         Result++;
@@ -489,6 +527,96 @@ int32 REWorker::FixTextures(const FString& Path, FString& OutError)
       Task.EnterProgressFrame(1.f);
       Result++;
       continue;
+    }
+  }
+  return Result;
+}
+
+int32 REWorker::FixSpeedTrees(const FString& Path, ULevel* Level, FString& OutError)
+{
+  TArray<FString> Lines;
+  FFileHelper::LoadFileToStringArray(Lines, *Path);
+  if (!Lines.Num())
+  {
+    OutError = TEXT("The file appears to be empty!");
+    return -1;
+  }
+
+  int32 Result = 0;
+  TMap<FString, TMap<FString, UMaterialInterface*>> MaterialMap;
+  for (int32 Idx = 0; Idx < Lines.Num(); ++Idx)
+  {
+    if (Lines[Idx].StartsWith(TEXT(" ")))
+    {
+      continue;
+    }
+    FString Name = Lines[Idx];
+    MaterialMap.Add(Name, TMap<FString, UMaterialInterface*>());
+    while (++Idx < Lines.Num())
+    {
+      if (!Lines[Idx].StartsWith(TEXT(" ")))
+      {
+        break;
+      }
+      FString Trimmed = Lines[Idx].TrimStartAndEnd();
+      int32 Pos = Trimmed.Find(VSEP);
+      if (Pos == INDEX_NONE)
+      {
+        continue;
+      }
+      FString MaterialName = Trimmed.Mid(Pos + 1);
+      if (MaterialName != TEXT("None"))
+      {
+        UMaterialInterface* Material = FindResource<UMaterialInterface>(MaterialName);
+        MaterialMap[Name].Add(Trimmed.Mid(0, Pos), Material);
+        if (!Material)
+        {
+          UE_LOG(LogTemp, Error, TEXT("RE Helper: Failed to find Material \"%s\" for actor \"%s\""), *MaterialName, *Name);
+          OutError = TEXT("Some errors occured. See the Output Log for details.");
+        }
+      }
+      else
+      {
+        MaterialMap[Name].Add(Trimmed.Mid(0, Pos), nullptr);
+      }
+    }
+    Idx--;
+  }
+
+  if (!MaterialMap.Num())
+  {
+    OutError = TEXT("The file appears to be empty!");
+    return -1;
+  }
+
+  for (const auto& ActorEntry : MaterialMap)
+  {
+    for (AActor* UntypedActor : Level->Actors)
+    {
+      FString Name;
+      UntypedActor->GetName(Name);
+      if (Name == ActorEntry.Key)
+      {
+        if (AStaticMeshActor* Actor = Cast<AStaticMeshActor>(UntypedActor))
+        {
+          if (UStaticMeshComponent* Component = Actor->GetStaticMeshComponent())
+          {
+            TArray<FName> SlotNames = Component->GetMaterialSlotNames();
+            for (const auto& ActorMaterialInfo : ActorEntry.Value)
+            {
+              for (const FName& Slot : SlotNames)
+              {
+                if (Slot.ToString().EndsWith(ActorMaterialInfo.Key))
+                {
+                  Component->SetMaterialByName(Slot, ActorMaterialInfo.Value);
+                }
+              }
+            }
+            Component->PostEditChange();
+            Result++;
+          }
+        }
+      }
     }
   }
   return Result;

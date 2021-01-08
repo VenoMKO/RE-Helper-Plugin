@@ -12,6 +12,7 @@ public:
 	void OnAssignDefaultsClicked();
 	void OnImportActorsClicked();
 	void OnFixTexturesClicked();
+	void OnFixSpeedTreesClicked();
 
 	/** IModuleInterface implementation */
 	void StartupModule() override;

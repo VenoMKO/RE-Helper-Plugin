@@ -12,6 +12,8 @@ public:
   static int32 AssignDefaultMaterials(const FString& Path, FString& OutError);
   // Apply correct compression settings and SRGB flag to textures. Returns number of modified assets or -1 on error.
   static int32 FixTextures(const FString& Path, FString& OutError);
+  // Set correct materials for SpeedTree actors in the Level
+  static int32 FixSpeedTrees(const FString& Path, ULevel* Level, FString& OutError);
 
 private:
   // Create and connect parameters

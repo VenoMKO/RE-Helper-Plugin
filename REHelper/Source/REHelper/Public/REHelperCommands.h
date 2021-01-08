@@ -23,4 +23,5 @@ public:
 	TSharedPtr<FUICommandInfo> AssignDefaults;
 	TSharedPtr<FUICommandInfo> ImportActors;
 	TSharedPtr<FUICommandInfo> FixTextures;
+	TSharedPtr<FUICommandInfo> FixSpeedTrees;
 };

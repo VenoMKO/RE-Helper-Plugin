@@ -28,6 +28,7 @@ void FREHelperModule::StartupModule()
   PluginCommands->MapAction(FREHelperCommands::Get().ImportMaterials, FExecuteAction::CreateRaw(this, &FREHelperModule::OnImportMaterialsClicked), FCanExecuteAction());
   PluginCommands->MapAction(FREHelperCommands::Get().AssignDefaults, FExecuteAction::CreateRaw(this, &FREHelperModule::OnAssignDefaultsClicked), FCanExecuteAction());
   PluginCommands->MapAction(FREHelperCommands::Get().ImportActors, FExecuteAction::CreateRaw(this, &FREHelperModule::OnImportActorsClicked), FCanExecuteAction());
+  PluginCommands->MapAction(FREHelperCommands::Get().FixSpeedTrees, FExecuteAction::CreateRaw(this, &FREHelperModule::OnFixSpeedTreesClicked), FCanExecuteAction());
   UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FREHelperModule::RegisterMenus));
 }
 
@@ -195,7 +196,7 @@ void FREHelperModule::OnFixTexturesClicked()
         }
         else
         {
-          Title = FText::FromString(TEXT("There are no textures in from the list!"));
+          Title = FText::FromString(TEXT("There are no textures in the list!"));
           Message = FText::FromString(TEXT("Make sure you've selected a correct Textures.txt file."));
         }
       }
@@ -203,6 +204,66 @@ void FREHelperModule::OnFixTexturesClicked()
       {
         Title = FText::FromString(TEXT("Done!"));
         Message = FText::FromString(FString::Printf(TEXT("Processed %d textures."), Num) + ErrorMessage);
+      }
+      FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
+    }
+  }
+}
+
+void FREHelperModule::OnFixSpeedTreesClicked()
+{
+  UWorld* World = GEditor->GetEditorWorldContext().World();
+  if (!World)
+  {
+    FText Title = FText::FromString(TEXT("Error!"));
+    FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("No World is open. Can't iterate SpeedTrees!"), &Title);
+    return;
+  }
+  else if (!World->GetCurrentLevel())
+  {
+    FText Title = FText::FromString(TEXT("No levels loaded!"));
+    FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Load a level to iterate SpeedTrees!"), &Title);
+    return;
+  }
+  else if (World->GetCurrentLevel()->bLocked)
+  {
+    FText Title = FText::FromString(TEXT("The Level is locked!"));
+    FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("Unlock the level, or load a different one!"), &Title);
+    return;
+  }
+  if (IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get())
+  {
+    TArray<FString> OutFiles;
+    FString Filter = TEXT("SpeedTree Material Overrides|SpeedTreeOverrides.txt");
+    if (DesktopPlatform->OpenFileDialog(nullptr, TEXT("Open SpeedTreeOverrides file"), TEXT(""), TEXT("SpeedTreeOverrides.txt"), Filter, EFileDialogFlags::None, OutFiles))
+    {
+      FString ErrorMessage;
+      int32 Num = REWorker::FixSpeedTrees(OutFiles[0], World->GetCurrentLevel(), ErrorMessage);
+
+      FText Title;
+      FText Message;
+      if (Num < 0)
+      {
+        Title = FText::FromString(TEXT("Error!"));
+        Message = FText::FromString(ErrorMessage);
+      }
+      else if (Num == 0)
+      {
+        if (ErrorMessage.Len())
+        {
+          Title = FText::FromString(TEXT("Error!"));
+          Message = FText::FromString(TEXT("Failed to process any actors. ") + ErrorMessage);
+        }
+        else
+        {
+          Title = FText::FromString(TEXT("There are no actors in the list!"));
+          Message = FText::FromString(TEXT("Make sure you've selected a correct SpeedTreeOverrides.txt file and loaded the correct level."));
+        }
+      }
+      else
+      {
+        Title = FText::FromString(TEXT("Done!"));
+        Message = FText::FromString(FString::Printf(TEXT("Processed %d actors. "), Num) + ErrorMessage);
       }
       FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
     }
@@ -223,6 +284,7 @@ void FREHelperModule::RegisterMenus()
           SubMenuSection.AddMenuEntry(FREHelperCommands::Get().ImportMaterials).SetCommandList(PluginCommands);
           SubMenuSection.AddMenuEntry(FREHelperCommands::Get().AssignDefaults).SetCommandList(PluginCommands);
           SubMenuSection.AddMenuEntry(FREHelperCommands::Get().ImportActors).SetCommandList(PluginCommands);
+          SubMenuSection.AddMenuEntry(FREHelperCommands::Get().FixSpeedTrees).SetCommandList(PluginCommands);
         });
         Section.AddEntry(FToolMenuEntry::InitComboButton(
           "REHelperActions",
