@@ -419,52 +419,85 @@ int32 REWorker::AssignDefaultMaterials(const FString& Path, FString& OutError)
     }
     Idx--;
 
+    bool AnyChanges = false;
     if (UStaticMesh* StaticMesh = Cast<UStaticMesh>(Asset))
     {
       FString MeshName;
       StaticMesh->GetName(MeshName);
-      bool AnyChanges = false;
       int32 MatIdx = 0;
-      for (UMaterialInterface* Material : Defaults)
+
+      // Handle SpeedTrees separately
+      if (Leafs.Num())
       {
-        FString MatName;
-        Material->GetName(MatName);
-        for (; MatIdx < StaticMesh->StaticMaterials.Num(); ++MatIdx)
+        for (UMaterialInterface* Material : Defaults)
         {
-          FString SlotName = StaticMesh->StaticMaterials[MatIdx].MaterialSlotName.ToString();
-          if (!SlotName.EndsWith(TEXT("_leafs")))
+          if (!Material)
           {
-            StaticMesh->StaticMaterials[MatIdx].MaterialInterface = Material;
-            AnyChanges = true;
-            MatIdx++;
-            break;
+            continue;
+          }
+          FString MatName;
+          Material->GetName(MatName);
+          for (; MatIdx < StaticMesh->StaticMaterials.Num(); ++MatIdx)
+          {
+            FString SlotName = StaticMesh->StaticMaterials[MatIdx].MaterialSlotName.ToString();
+            if (!SlotName.EndsWith(TEXT("_leafs")))
+            {
+              StaticMesh->StaticMaterials[MatIdx].MaterialInterface = Material;
+              AnyChanges = true;
+              MatIdx++;
+              break;
+            }
+          }
+        }
+
+        MatIdx = 0;
+        for (UMaterialInterface* Material : Leafs)
+        {
+          FString MatName;
+          Material->GetName(MatName);
+          for (; MatIdx < StaticMesh->StaticMaterials.Num(); ++MatIdx)
+          {
+            FString SlotName = StaticMesh->StaticMaterials[MatIdx].MaterialSlotName.ToString();
+            if (SlotName.EndsWith(TEXT("_leafs")))
+            {
+              StaticMesh->StaticMaterials[MatIdx].MaterialInterface = Material;
+              AnyChanges = true;
+              MatIdx++;
+              break;
+            }
           }
         }
       }
-
-      MatIdx = 0;
-      for (UMaterialInterface* Material : Leafs)
+      else
       {
-        FString MatName;
-        Material->GetName(MatName);
+        // Regular static mesh
         for (; MatIdx < StaticMesh->StaticMaterials.Num(); ++MatIdx)
         {
-          FString SlotName = StaticMesh->StaticMaterials[MatIdx].MaterialSlotName.ToString();
-          if (SlotName.EndsWith(TEXT("_leafs")))
+          if (MatIdx < Defaults.Num() && Defaults[MatIdx])
           {
-            StaticMesh->StaticMaterials[MatIdx].MaterialInterface = Material;
+            StaticMesh->StaticMaterials[MatIdx].MaterialInterface = Defaults[MatIdx];
             AnyChanges = true;
-            MatIdx++;
-            break;
           }
         }
       }
-
-      if (AnyChanges)
+    }
+    else if (USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>(Asset))
+    {
+      
+      for (int32 MatIdx = 0; MatIdx < SkeletalMesh->Materials.Num(); ++MatIdx)
       {
-        Result++;
-        StaticMesh->PostEditChange();
+        if (MatIdx < Defaults.Num() && Defaults[MatIdx])
+        {
+          SkeletalMesh->Materials[MatIdx].MaterialInterface = Defaults[MatIdx];
+          AnyChanges = true;
+        }
       }
+    }
+
+    if (AnyChanges)
+    {
+      Result++;
+      Asset->PostEditChange();
     }
   }
   return Result;
@@ -593,28 +626,27 @@ int32 REWorker::FixSpeedTrees(const FString& Path, ULevel* Level, FString& OutEr
   {
     for (AActor* UntypedActor : Level->Actors)
     {
-      FString Name;
-      UntypedActor->GetName(Name);
-      if (Name == ActorEntry.Key)
+      if (!UntypedActor || UntypedActor->GetActorLabel() != ActorEntry.Key)
       {
-        if (AStaticMeshActor* Actor = Cast<AStaticMeshActor>(UntypedActor))
+        continue;
+      }
+      if (AStaticMeshActor* Actor = Cast<AStaticMeshActor>(UntypedActor))
+      {
+        if (UStaticMeshComponent* Component = Actor->GetStaticMeshComponent())
         {
-          if (UStaticMeshComponent* Component = Actor->GetStaticMeshComponent())
+          TArray<FName> SlotNames = Component->GetMaterialSlotNames();
+          for (const auto& ActorMaterialInfo : ActorEntry.Value)
           {
-            TArray<FName> SlotNames = Component->GetMaterialSlotNames();
-            for (const auto& ActorMaterialInfo : ActorEntry.Value)
+            for (const FName& Slot : SlotNames)
             {
-              for (const FName& Slot : SlotNames)
+              if (Slot.ToString().EndsWith(ActorMaterialInfo.Key))
               {
-                if (Slot.ToString().EndsWith(ActorMaterialInfo.Key))
-                {
-                  Component->SetMaterialByName(Slot, ActorMaterialInfo.Value);
-                }
+                Component->SetMaterialByName(Slot, ActorMaterialInfo.Value);
               }
             }
-            Component->PostEditChange();
-            Result++;
           }
+          Component->PostEditChange();
+          Result++;
         }
       }
     }
