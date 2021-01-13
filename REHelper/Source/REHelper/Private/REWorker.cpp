@@ -15,7 +15,7 @@
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionReflectionVectorWS.h"
-#include "Materials/MaterialExpressionStaticBoolParameter.h"
+#include "Materials/MaterialExpressionStaticSwitchParameter.h"
 #include "Materials/MaterialExpressionTextureSampleParameter2D.h"
 #include "Materials/MaterialExpressionTextureSampleParameterCube.h"
 
@@ -925,7 +925,7 @@ void REWorker::SetupMasterMaterial(UMaterial* UnrealMaterial, RMaterial* RealMat
   PosX = 340;
   for (const auto& P : RealMaterial->BoolParameters)
   {
-    UMaterialExpressionStaticBoolParameter* Param = NewObject<UMaterialExpressionStaticBoolParameter>(UnrealMaterial);
+    UMaterialExpressionStaticSwitchParameter* Param = NewObject<UMaterialExpressionStaticSwitchParameter>(UnrealMaterial);
     UnrealMaterial->Expressions.Add(Param);
     Param->ParameterName = *P.Key;
     Param->MaterialExpressionEditorX = GetPosX(340);
