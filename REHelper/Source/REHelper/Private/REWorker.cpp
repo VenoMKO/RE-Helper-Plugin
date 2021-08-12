@@ -1,9 +1,11 @@
 #include "REWorker.h"
 
 #include "MaterialShared.h"
+#include "ObjectTools.h"
 
 #include "Factories/MaterialFactoryNew.h"
 #include "Factories/MaterialInstanceConstantFactoryNew.h"
+#include "Factories/SoundCueFactoryNew.h"
 
 #include "Materials/MaterialInstance.h"
 #include "Materials/MaterialInstanceConstant.h"
@@ -18,6 +20,20 @@
 #include "Materials/MaterialExpressionStaticSwitchParameter.h"
 #include "Materials/MaterialExpressionTextureSampleParameter2D.h"
 #include "Materials/MaterialExpressionTextureSampleParameterCube.h"
+
+#include "Sound/SoundCue.h"
+#include "Sound/SoundWave.h"
+#include "Sound/SoundNode.h"
+#include "Sound/SoundNodeAttenuation.h"
+#include "Sound/SoundNodeDelay.h"
+#include "Sound/SoundNodeConcatenator.h"
+#include "Sound/SoundNodeMixer.h"
+#include "Sound/SoundNodeModulator.h"
+#include "Sound/SoundNodeLooping.h"
+#include "Sound/SoundNodeRandom.h"
+#include "Sound/SoundNodeWavePlayer.h"
+
+#include "SoundCueGraph/SoundCueGraphNode.h"
 
 #include "Misc/FileHelper.h"
 #include "Misc/ScopedSlowTask.h"
@@ -254,14 +270,15 @@ struct RTexture {
   }
 };
 
-int32 REWorker::ImportMaterials(const FString& Path, FString& OutError)
+TArray<UObject*> REWorker::ImportMaterials(const FString& Path, FString& OutError)
 {
+  TArray<UObject*> Result;
   TArray<FString> Lines;
   FFileHelper::LoadFileToStringArray(Lines, *Path);
   if (!Lines.Num())
   {
     OutError = TEXT("The file appears to be empty!");
-    return -1;
+    return Result;
   }
 
   TArray<RMaterial> Materials;
@@ -287,14 +304,13 @@ int32 REWorker::ImportMaterials(const FString& Path, FString& OutError)
   if (!Materials.Num())
   {
     OutError = TEXT("Failed to parse the file. Make sure it's not corrupted.");
-    return -1;
+    return Result;
   }
 
   FScopedSlowTask Task((float)Materials.Num(), NSLOCTEXT("REHelper", "ImportMaterials", "Importing materials..."));
   Task.MakeDialog();
 
   // Link parents and create master materials
-  int32 Result = 0;
   UMaterialFactoryNew* MatFactory = NewObject<UMaterialFactoryNew>();
   for (RMaterial& Material : Materials)
   {
@@ -308,7 +324,7 @@ int32 REWorker::ImportMaterials(const FString& Path, FString& OutError)
         Asset = CreateAsset<UMaterial>(Material.Name, MatFactory);
         if (Asset)
         {
-          Result++;
+          Result.Add(Cast<UObject>(Asset));
           bool Error = false;
           SetupMasterMaterial(Asset, &Material, Error);
           if (Error && !OutError.Len())
@@ -348,7 +364,11 @@ int32 REWorker::ImportMaterials(const FString& Path, FString& OutError)
       continue;
     }
     Task.EnterProgressFrame(1.f, FText::FromString(TEXT("Importing: ") + Material.Name));
-    Result += CreateMaterialInstance(&Material, MiFactory, AnyMiErrors);
+    TArray<UObject*> Tmp = CreateMaterialInstance(&Material, MiFactory, AnyMiErrors);
+    if (Tmp.Num())
+    {
+      Result.Insert(Tmp, Result.Num() - 1);
+    }
   }
   if (AnyMiErrors)
   {
@@ -937,37 +957,41 @@ void REWorker::SetupMasterMaterial(UMaterial* UnrealMaterial, RMaterial* RealMat
   RealMaterial->UnrealMaterial = UnrealMaterial;
 }
 
-int32 REWorker::CreateMaterialInstance(RMaterial* RealMaterial, UFactory* MiFactory, bool& Error)
+TArray<UObject*> REWorker::CreateMaterialInstance(RMaterial* RealMaterial, UFactory* MiFactory, bool& Error)
 {
-  int32 Count = 0;
+  TArray<UObject*> Result;
   if (RealMaterial->Parent)
   {
     // Create parent Material Instances
-    Count += CreateMaterialInstance(RealMaterial->Parent, MiFactory, Error);
+    TArray<UObject*> Tmp;
+    Tmp = CreateMaterialInstance(RealMaterial->Parent, MiFactory, Error);
+    if (Tmp.Num())
+    {
+      Result.Insert(Tmp, Result.Num() - 1);
+    }
   }
   else
   {
-    // RealMaterial is a Master Materials. We've created it earlier.
-    return 0;
+    return Result;
   }
 
   if (RealMaterial->UnrealMaterial)
   {
     // The Material Instance has been created earlier
-    return Count;
+    return Result;
   }
 
   if (UMaterialInstanceConstant* Asset = FindResource<UMaterialInstanceConstant>(RealMaterial->Name))
   {
     RealMaterial->UnrealMaterial = Asset;
-    return Count;
+    return Result;
   }
 
   Cast<UMaterialInstanceConstantFactoryNew>(MiFactory)->InitialParent = Cast<UMaterialInterface>(RealMaterial->Parent->UnrealMaterial);
   if (UMaterialInstanceConstant* Asset = CreateAsset<UMaterialInstanceConstant>(RealMaterial->Name, MiFactory))
   {
     RealMaterial->UnrealMaterial = Asset;
-    Count++;
+    Result.Add(Cast<UObject>(Asset));
     for (const auto& P : RealMaterial->TextureParameters)
     {
       if (!P.Value.Len() || P.Value == TEXT("None"))
@@ -1029,5 +1053,520 @@ int32 REWorker::CreateMaterialInstance(RMaterial* RealMaterial, UFactory* MiFact
     UE_LOG(LogTemp, Error, TEXT("RE Helper: Failed to find/create Material Instance Constant \"%s\""), *RealMaterial->Name);
     Error = true;
   }
-  return Count;
+  return Result;
+}
+
+UObject* REWorker::ImportSingleCue(const FString& Path, FString& OutError)
+{
+  TArray<FString> Items;
+  FFileHelper::LoadFileToStringArray(Items, *Path);
+  if (!Items.Num())
+  {
+    UE_LOG(LogTemp, Error, TEXT("RE Helper: SoundCue \"%s\" file is empty!"), *Path);
+    OutError = TEXT("The file \"");
+    OutError += Path + TEXT("\" appears to be empty!");
+    return nullptr;
+  }
+
+  FString CuePath;
+  for (const FString& Line : Items)
+  {
+    if (Line.Len() < 2)
+    {
+      continue;
+    }
+    CuePath = Line;
+    break;
+  }
+  if (!CuePath.Len())
+  {
+    UE_LOG(LogTemp, Error, TEXT("RE Helper: SoundCue \"%s\" file is malformed and has no in-game path!"), *Path);
+    OutError = TEXT("The file \"");
+    OutError += Path + TEXT("\" has no in-game path!");
+    return nullptr;
+  }
+  USoundCueFactoryNew* CueFactory = NewObject<USoundCueFactoryNew>();
+  USoundCue* Asset = FindResource<USoundCue>(CuePath);
+  if (!Asset)
+  {
+    Asset = CreateAsset<USoundCue>(CuePath, CueFactory);
+    if (!Asset)
+    {
+      UE_LOG(LogTemp, Error, TEXT("RE Helper: Failed to create a SoundCue \"%s\""), *CuePath);
+      OutError = TEXT("Failed to create a new SoundCue object!");
+      return nullptr;
+    }
+  }
+  else
+  {
+    UE_LOG(LogTemp, Display, TEXT("RE Helper: Skipping SoundCue \"%s\" since one already exists."), *CuePath);
+    OutError = TEXT("SoundCue object already exists!");
+    return nullptr;
+  }
+
+  USoundNode* RootNode = nullptr;
+  TMap<int32, USoundNode*> SoundNodes;
+  int32 NodesStartIdx = INDEX_NONE;
+  for (int32 LIdx = 1; LIdx < Items.Num(); ++LIdx)
+  {
+    FString Line = Items[LIdx];
+    if (Line.Len() <= 2 || Line.StartsWith(TEXT("\t")) || Line.StartsWith(TEXT(" ")))
+    {
+      continue;
+    }
+    if (Line.StartsWith(TEXT("Nodes:")))
+    {
+      if (NodesStartIdx != INDEX_NONE)
+      {
+        UE_LOG(LogTemp, Error, TEXT("RE Helper: Unexpected \"Nodes\" tag!"), *CuePath);
+        OutError = TEXT("Malformed file! See log for more details.");
+        ObjectTools::DeleteSingleObject(Asset);
+        return nullptr;
+      }
+      NodesStartIdx = LIdx + 1;
+      continue;
+    }
+    else if (NodesStartIdx == INDEX_NONE)
+    {
+      if (Line.StartsWith("Volume="))
+      {
+        Asset->VolumeMultiplier = FCString::Atof(*(Line.Mid(7)));
+        continue;
+      }
+      if (Line.StartsWith("Pitch="))
+      {
+        Asset->PitchMultiplier = FCString::Atof(*(Line.Mid(6)));
+        continue;
+      }
+      if (Line.StartsWith("MaxConcurrentPlayCount="))
+      {
+        Asset->bOverrideConcurrency = 1;
+        Asset->ConcurrencyOverrides.MaxCount = FCString::Atoi(*(Line.Mid(6)));
+        continue;
+      }
+    }
+    int32 Pos1 = Line.Find(VSEP);
+    if (Pos1 == INDEX_NONE)
+    {
+      continue;
+    }
+    int32 Index = FCString::Atoi(*Line.Mid(0, Pos1));
+    FString NodeClass = Line.Mid(Pos1 + 1);
+
+    if (NodeClass == "SoundNodeWave")
+    {
+      SoundNodes.Add(Index, Asset->ConstructSoundNode<USoundNodeWavePlayer>());
+    }
+    else if (NodeClass == "SoundNodeRandom")
+    {
+      SoundNodes.Add(Index, Asset->ConstructSoundNode<USoundNodeRandom>());
+    }
+    else if (NodeClass == "SoundNodeMixer")
+    {
+      SoundNodes.Add(Index, Asset->ConstructSoundNode<USoundNodeMixer>());
+    }
+    else if (NodeClass == "SoundNodeModulator")
+    {
+      SoundNodes.Add(Index, Asset->ConstructSoundNode<USoundNodeModulator>());
+    }
+    else if (NodeClass == "SoundNodeDelay")
+    {
+      SoundNodes.Add(Index, Asset->ConstructSoundNode<USoundNodeDelay>());
+    }
+    else if (NodeClass == "SoundNodeConcatenator")
+    {
+      SoundNodes.Add(Index, Asset->ConstructSoundNode<USoundNodeConcatenator>());
+    }
+    else if (NodeClass == "SoundNodeLoop")
+    {
+      SoundNodes.Add(Index, Asset->ConstructSoundNode<USoundNodeLooping>());
+    }
+    else if (NodeClass == "SoundNodeAttenuation")
+    {
+      SoundNodes.Add(Index, Asset->ConstructSoundNode<USoundNodeAttenuation>());
+    }
+    else
+    {
+      UE_LOG(LogTemp, Error, TEXT("RE Helper: [%s] Unknown node class \"%s\""), *CuePath, *NodeClass);
+      OutError = TEXT("Malformed file! See log for more details.");
+      ObjectTools::DeleteSingleObject(Asset);
+      return nullptr;
+    }
+
+    if (!RootNode)
+    {
+      RootNode = SoundNodes.FindChecked(Index);
+    }
+  }
+
+  if (NodesStartIdx == INDEX_NONE || !RootNode)
+  {
+    UE_LOG(LogTemp, Error, TEXT("RE Helper: Failed to find a root node!"));
+    OutError = TEXT("Malformed file! See log for more details.");
+    ObjectTools::DeleteSingleObject(Asset);
+    return nullptr;
+  }
+
+  Asset->FirstNode = RootNode;
+  RootNode->GetGraphNode()->NodePosX = -270;
+
+  bool IsError = false;
+  FString LastClass;
+  int32 LastIndex = INDEX_NONE;
+  for (int32 LIdx = NodesStartIdx; LIdx < Items.Num(); ++LIdx)
+  {
+    FString Line = Items[LIdx];
+    if (Line.Len() <= 2)
+    {
+      continue;
+    }
+    if (!Line.StartsWith(TEXT("\t")))
+    {
+      IsError = false;
+      int32 Pos1 = Line.Find(VSEP);
+      if (Pos1 == INDEX_NONE)
+      {
+        continue;
+      }
+      LastIndex = FCString::Atoi(*Line.Mid(0, Pos1));
+      LastClass = Line.Mid(Pos1 + 1);
+    }
+    else if (IsError)
+    {
+      continue;
+    }
+    USoundNode* Untyped = (USoundNode*)SoundNodes.FindChecked(LastIndex);
+    if (!Untyped)
+    {
+      continue;
+    }
+
+    FString Formatted = Line.Mid(1);
+    TArray<USoundNode*> Children;
+    TArray<float> Weights;
+    TArray<float> Volumes;
+    TArray<float> Pitches;
+
+    if (Formatted.StartsWith(TEXT("Children")))
+    {
+      int32 Pos = Formatted.Find("=(");
+      FString Cutted = Formatted.Mid(Pos + 2, Formatted.Len() - Pos - 3);
+      if (!Cutted.Len())
+      {
+        continue;
+      }
+      TArray<FString> RawItems;
+      Cutted.Replace(TEXT("("), TEXT("")).ParseIntoArray(RawItems, TEXT(")"), true);
+      for (int32 RawIndex = 0; RawIndex < RawItems.Num(); ++RawIndex)
+      {
+        FString RawItem = RawItems[RawIndex];
+        if (RawItem.StartsWith(TEXT(",")))
+        {
+          RawItem = RawItem.Mid(1);
+        }
+        Pos = RawItem.Find(TEXT("="));
+
+        if (RawItem.StartsWith(TEXT("Index")))
+        {
+          int32 MapKey = FCString::Atoi(*(RawItem.Mid(Pos + 1)));
+          Children.Add((USoundNode*)SoundNodes.FindChecked(MapKey));
+        }
+        else if (RawItem.StartsWith(TEXT("Weight")))
+        {
+          Weights.Add(FCString::Atof(*(RawItem.Mid(Pos + 1))));
+        }
+        else if (RawItem.StartsWith(TEXT("Volume")))
+        {
+          Volumes.Add(FCString::Atof(*(RawItem.Mid(Pos + 1))));
+        }
+        else if (RawItem.StartsWith(TEXT("Pitch")))
+        {
+          Pitches.Add(FCString::Atof(*(RawItem.Mid(Pos + 1))));
+        }
+      }
+    }
+
+    const int32 DistanceX = 270;
+    const int32 DistanceY = 130;
+    if (LastClass == "SoundNodeWave")
+    {
+      USoundNodeWavePlayer* TNode = (USoundNodeWavePlayer*)Untyped;
+      if (Formatted.StartsWith(TEXT("Looping")))
+      {
+        int32 Pos1 = Line.Find(TEXT("="));
+        TNode->bLooping = FCString::ToBool(*Line.Mid(Pos1 + 1));
+      }
+      else if (Formatted.StartsWith(TEXT("Sound")))
+      {
+        int32 Pos1 = Line.Find(TEXT("="));
+        if (USoundWave* Wave = FindResource<USoundWave>(Line.Mid(Pos1 + 1)))
+        {
+          TNode->SetSoundWave(Wave);
+        }
+        else
+        {
+          UE_LOG(LogTemp, Error, TEXT("RE Helper: Failed to find SoundWave \"%s\""), *(Line.Mid(Pos1 + 1)));
+          OutError = TEXT("Some errors occured. See the Output Log for details.");
+          IsError = true;
+        }
+      }
+    }
+    else if (LastClass == "SoundNodeRandom")
+    {
+      USoundNodeRandom* TNode = (USoundNodeRandom*)Untyped;
+      if (Formatted.StartsWith(TEXT("Children")))
+      {
+        for (int32 MinIdx = 0; MinIdx < Children.Num(); ++MinIdx)
+        {
+          TNode->InsertChildNode(MinIdx);
+        }
+        TNode->SetChildNodes(Children);
+        int32 OffsetY = TNode->GetGraphNode()->NodePosY;
+        for (int32 ChIndex = Children.Num() - 1; ChIndex >= 0; --ChIndex)
+        {
+          USoundNode* Child = Children[ChIndex];
+          USoundCueGraphNode* SoundGraphNode = Cast<USoundCueGraphNode>(TNode->GetGraphNode());
+          Child->GetGraphNode()->NodePosX = TNode->GetGraphNode()->NodePosX - SoundGraphNode->EstimateNodeWidth() - DistanceX;
+          Child->GetGraphNode()->NodePosY = OffsetY + (ChIndex * DistanceY);
+        }
+        if (Weights.Num())
+        {
+          TNode->Weights = Weights;
+        }
+      }
+    }
+    else if (LastClass == "SoundNodeMixer")
+    {
+      USoundNodeMixer* TNode = (USoundNodeMixer*)Untyped;
+      if (Formatted.StartsWith(TEXT("Children")))
+      {
+        for (int32 MinIdx = 0; MinIdx < Children.Num(); ++MinIdx)
+        {
+          TNode->InsertChildNode(MinIdx);
+        }
+        TNode->SetChildNodes(Children);
+        int32 OffsetY = TNode->GetGraphNode()->NodePosY;
+        for (int32 ChIndex = Children.Num() - 1; ChIndex >= 0; --ChIndex)
+        {
+          USoundNode* Child = Children[ChIndex];
+          USoundCueGraphNode* SoundGraphNode = Cast<USoundCueGraphNode>(TNode->GetGraphNode());
+          Child->GetGraphNode()->NodePosX = TNode->GetGraphNode()->NodePosX - SoundGraphNode->EstimateNodeWidth() - DistanceX;
+          Child->GetGraphNode()->NodePosY = OffsetY + (ChIndex * DistanceY);
+        }
+        if (Volumes.Num())
+        {
+          TNode->InputVolume = Volumes;
+        }
+      }
+    }
+    else if (LastClass == "SoundNodeModulator")
+    {
+      USoundNodeModulator* TNode = (USoundNodeModulator*)Untyped;
+      if (Formatted.StartsWith(TEXT("Children")))
+      {
+        for (int32 MinIdx = 0; MinIdx < Children.Num(); ++MinIdx)
+        {
+          TNode->InsertChildNode(MinIdx);
+        }
+        TNode->SetChildNodes(Children);
+        int32 OffsetY = TNode->GetGraphNode()->NodePosY;
+        for (int32 ChIndex = Children.Num() - 1; ChIndex >= 0; --ChIndex)
+        {
+          USoundNode* Child = Children[ChIndex];
+          USoundCueGraphNode* SoundGraphNode = Cast<USoundCueGraphNode>(TNode->GetGraphNode());
+          Child->GetGraphNode()->NodePosX = TNode->GetGraphNode()->NodePosX - SoundGraphNode->EstimateNodeWidth() - DistanceX;
+          Child->GetGraphNode()->NodePosY = OffsetY + (ChIndex * DistanceY);
+        }
+      }
+      else if (Formatted.StartsWith("PitchMin"))
+      {
+        int32 Pos = Formatted.Find(TEXT("="));
+        TNode->PitchMin = FCString::Atof(*(Formatted.Mid(Pos + 1)));
+      }
+      else if (Formatted.StartsWith("PitchMax"))
+      {
+        int32 Pos = Formatted.Find(TEXT("="));
+        TNode->PitchMax = FCString::Atof(*(Formatted.Mid(Pos + 1)));
+      }
+      else if (Formatted.StartsWith("VolumeMin"))
+      {
+        int32 Pos = Formatted.Find(TEXT("="));
+        TNode->VolumeMin = FCString::Atof(*(Formatted.Mid(Pos + 1)));
+      }
+      else if (Formatted.StartsWith("VolumeMax"))
+      {
+        int32 Pos = Formatted.Find(TEXT("="));
+        TNode->VolumeMax = FCString::Atof(*(Formatted.Mid(Pos + 1)));
+      }
+    }
+    else if (LastClass == "SoundNodeDelay")
+    {
+      USoundNodeDelay* TNode = (USoundNodeDelay*)Untyped;
+      if (Formatted.StartsWith(TEXT("Children")))
+      {
+        for (int32 MinIdx = 0; MinIdx < Children.Num(); ++MinIdx)
+        {
+          TNode->InsertChildNode(MinIdx);
+        }
+        TNode->SetChildNodes(Children);
+        int32 OffsetY = TNode->GetGraphNode()->NodePosY;
+        for (int32 ChIndex = Children.Num() - 1; ChIndex >= 0; --ChIndex)
+        {
+          USoundNode* Child = Children[ChIndex];
+          USoundCueGraphNode* SoundGraphNode = Cast<USoundCueGraphNode>(TNode->GetGraphNode());
+          Child->GetGraphNode()->NodePosX = TNode->GetGraphNode()->NodePosX - SoundGraphNode->EstimateNodeWidth() - DistanceX;
+          Child->GetGraphNode()->NodePosY = OffsetY + (ChIndex * DistanceY);
+        }
+      }
+      else if (Formatted.StartsWith("DelayMin"))
+      {
+        int32 Pos = Formatted.Find(TEXT("="));
+        TNode->DelayMin = FCString::Atof(*(Formatted.Mid(Pos + 1)));
+      }
+      else if (Formatted.StartsWith("DelayMax"))
+      {
+        int32 Pos = Formatted.Find(TEXT("="));
+        TNode->DelayMax = FCString::Atof(*(Formatted.Mid(Pos + 1)));
+      }
+    }
+    else if (LastClass == "SoundNodeConcatenator")
+    {
+      USoundNodeConcatenator* TNode = (USoundNodeConcatenator*)Untyped;
+      if (Formatted.StartsWith(TEXT("Children")))
+      {
+        for (int32 MinIdx = 0; MinIdx < Children.Num(); ++MinIdx)
+        {
+          TNode->InsertChildNode(MinIdx);
+        }
+        TNode->SetChildNodes(Children);
+        int32 OffsetY = TNode->GetGraphNode()->NodePosY;
+        for (int32 ChIndex = Children.Num() - 1; ChIndex >= 0; --ChIndex)
+        {
+          USoundNode* Child = Children[ChIndex];
+          USoundCueGraphNode* SoundGraphNode = Cast<USoundCueGraphNode>(TNode->GetGraphNode());
+          Child->GetGraphNode()->NodePosX = TNode->GetGraphNode()->NodePosX - SoundGraphNode->EstimateNodeWidth() - DistanceX;
+          Child->GetGraphNode()->NodePosY = OffsetY + (ChIndex * DistanceY);
+        }
+        if (Volumes.Num())
+        {
+          TNode->InputVolume = Volumes;
+        }
+      }
+    }
+    else if (LastClass == "SoundNodeLoop")
+    {
+      USoundNodeLooping* TNode = (USoundNodeLooping*)Untyped;
+      if (Formatted.StartsWith(TEXT("Children")))
+      {
+        for (int32 MinIdx = 0; MinIdx < Children.Num(); ++MinIdx)
+        {
+          TNode->InsertChildNode(MinIdx);
+        }
+        TNode->SetChildNodes(Children);
+        int32 OffsetY = TNode->GetGraphNode()->NodePosY;
+        for (int32 ChIndex = Children.Num() - 1; ChIndex >= 0; --ChIndex)
+        {
+          USoundNode* Child = Children[ChIndex];
+          USoundCueGraphNode* SoundGraphNode = Cast<USoundCueGraphNode>(TNode->GetGraphNode());
+          Child->GetGraphNode()->NodePosX = TNode->GetGraphNode()->NodePosX - SoundGraphNode->EstimateNodeWidth() - DistanceX;
+          Child->GetGraphNode()->NodePosY = OffsetY + (ChIndex * DistanceY);
+        }
+      }
+      else if (Formatted.StartsWith(TEXT("bLoopIndefinitely")))
+      {
+        TNode->bLoopIndefinitely = false;
+      }
+      else if (Formatted.StartsWith(TEXT("LoopCount")))
+      {
+        int32 Pos = Formatted.Find(TEXT("="));
+        TNode->LoopCount = FCString::Atoi(*(Formatted.Mid(Pos)));
+      }
+    }
+    else if (LastClass == "SoundNodeAttenuation")
+    {
+      USoundNodeAttenuation* Tnode = (USoundNodeAttenuation*)Untyped;
+      Tnode->bOverrideAttenuation = 1;
+      if (Formatted.StartsWith(TEXT("Children")))
+      {
+        for (int32 MinIdx = 0; MinIdx < Children.Num(); ++MinIdx)
+        {
+          Tnode->InsertChildNode(MinIdx);
+        }
+        Tnode->SetChildNodes(Children);
+        int32 OffsetY = Tnode->GetGraphNode()->NodePosY;
+        for (int32 ChIndex = Children.Num() - 1; ChIndex >= 0; --ChIndex)
+        {
+          USoundNode* Child = Children[ChIndex];
+          USoundCueGraphNode* SoundGraphNode = Cast<USoundCueGraphNode>(Tnode->GetGraphNode());
+          Child->GetGraphNode()->NodePosX = Tnode->GetGraphNode()->NodePosX - SoundGraphNode->EstimateNodeWidth() - DistanceX;
+          Child->GetGraphNode()->NodePosY = OffsetY + (ChIndex * DistanceY);
+        }
+      }
+      else if (Formatted.StartsWith(TEXT("RadiusMin=")))
+      {
+        Tnode->AttenuationOverrides.RadiusMin_DEPRECATED = FCString::Atof(*(Formatted.Mid(Formatted.Find(TEXT("=")) + 1)));
+      }
+      else if (Formatted.StartsWith(TEXT("RadiusMax=")))
+      {
+        float f = FCString::Atof(*(Formatted.Mid(Formatted.Find(TEXT("=")) + 1)));
+        Tnode->AttenuationOverrides.FalloffDistance = f;
+        Tnode->AttenuationOverrides.RadiusMax_DEPRECATED = f;
+      }
+      else if (Formatted.StartsWith(TEXT("LPFRadiusMin=")))
+      {
+        Tnode->AttenuationOverrides.LPFRadiusMin = FCString::Atof(*(Formatted.Mid(Formatted.Find(TEXT("=")) + 1)));
+      }
+      else if (Formatted.StartsWith(TEXT("LPFRadiusMax=")))
+      {
+        Tnode->AttenuationOverrides.LPFRadiusMax = FCString::Atof(*(Formatted.Mid(Formatted.Find(TEXT("=")) + 1)));
+      }
+      else if (Formatted.StartsWith(TEXT("AttenuateWithLPF=")))
+      {
+        Tnode->AttenuationOverrides.bAttenuateWithLPF = FCString::ToBool(*(Formatted.Mid(Formatted.Find(TEXT("=")) + 1)));
+      }
+      else if (Formatted.StartsWith(TEXT("Attenuate=")))
+      {
+        Tnode->AttenuationOverrides.bAttenuate = FCString::ToBool(*(Formatted.Mid(Formatted.Find(TEXT("=")) + 1)));
+      }
+    }
+  }
+
+  Asset->PostInitProperties();
+  Asset->LinkGraphNodesFromSoundNodes();
+  return (UObject*)Asset;
+}
+
+TArray<UObject*> REWorker::ImportSoundCues(const FString& Path, FString& OutError)
+{
+  TArray<UObject*> Result;
+  TArray<FString> Lines;
+  FFileHelper::LoadFileToStringArray(Lines, *Path);
+  if (!Lines.Num())
+  {
+    OutError = TEXT("The file appears to be empty!");
+    return {};
+  }
+
+  FScopedSlowTask Task((float)Lines.Num(), NSLOCTEXT("REHelper", "ImportingCues", "Importing sound cues..."));
+  Task.MakeDialog();
+
+  const int32 DistanceX = 270;
+  const int32 DistanceY = 130;
+  USoundCueFactoryNew* CueFactory = NewObject<USoundCueFactoryNew>();
+  for (int32 Idx = 0; Idx < Lines.Num(); ++Idx)
+  {
+    Task.EnterProgressFrame(1.f);
+    if (Lines[Idx].StartsWith(TEXT(" ")) || Lines[Idx].Len() <= 2)
+    {
+      continue;
+    }
+    UObject* Cue = ImportSingleCue(Lines[Idx], OutError);
+    if (!Cue)
+    {
+      OutError = TEXT("Failed to import some cues! See log for more details.");
+      continue;
+    }
+    Result.Add(Cue);
+  }
+  return Result;
 }

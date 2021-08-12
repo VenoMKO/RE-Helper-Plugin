@@ -2,17 +2,28 @@
 
 #include "REHelper.h"
 #include "REWorker.h"
+
+#include "Editor.h"
+
 #include "REHelperStyle.h"
 #include "REHelperCommands.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/FileHelper.h"
+#include "Modules/ModuleManager.h"
+#include "ContentBrowserModule.h"
 #include "ToolMenus.h"
 
-#include "DesktopPlatformModule.h"
+#include "DesktopPlatform/Public/IDesktopPlatform.h"
+#include "DesktopPlatform/Public/DesktopPlatformModule.h"
+
 #include "AssetRegistryModule.h"
 #include "AssetToolsModule.h"
+#include "Misc/ScopedSlowTask.h"
 #include "IAssetTools.h"
+#include "IContentBrowserSingleton.h"
 #include "PackageTools.h"
+
+#include "ScopedTransaction.h"
 
 static const FName REHelperTabName("REHelper");
 
@@ -25,10 +36,12 @@ void FREHelperModule::StartupModule()
   FREHelperCommands::Register();
   PluginCommands = MakeShareable(new FUICommandList);
   PluginCommands->MapAction(FREHelperCommands::Get().FixTextures, FExecuteAction::CreateRaw(this, &FREHelperModule::OnFixTexturesClicked), FCanExecuteAction());
+  PluginCommands->MapAction(FREHelperCommands::Get().ImportCues, FExecuteAction::CreateRaw(this, &FREHelperModule::OnImportCuesClicked), FCanExecuteAction());
   PluginCommands->MapAction(FREHelperCommands::Get().ImportMaterials, FExecuteAction::CreateRaw(this, &FREHelperModule::OnImportMaterialsClicked), FCanExecuteAction());
   PluginCommands->MapAction(FREHelperCommands::Get().AssignDefaults, FExecuteAction::CreateRaw(this, &FREHelperModule::OnAssignDefaultsClicked), FCanExecuteAction());
   PluginCommands->MapAction(FREHelperCommands::Get().ImportActors, FExecuteAction::CreateRaw(this, &FREHelperModule::OnImportActorsClicked), FCanExecuteAction());
   PluginCommands->MapAction(FREHelperCommands::Get().FixSpeedTrees, FExecuteAction::CreateRaw(this, &FREHelperModule::OnFixSpeedTreesClicked), FCanExecuteAction());
+  PluginCommands->MapAction(FREHelperCommands::Get().ImportSingleCue, FExecuteAction::CreateRaw(this, &FREHelperModule::OnImportSingleCueClicked), FCanExecuteAction());
   UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FREHelperModule::RegisterMenus));
 }
 
@@ -51,16 +64,15 @@ void FREHelperModule::OnImportMaterialsClicked()
       FScopedTransaction Transaction(NSLOCTEXT("REHelper", "ImportMaterials", "Import Materials to Project"));
       
       FString ErrorMessage;
-      int32 Num = REWorker::ImportMaterials(FilePaths[0], ErrorMessage);
-      
+      TArray<UObject*> Result = REWorker::ImportMaterials(FilePaths[0], ErrorMessage);
       FText Title;
       FText Message;
-      if (Num < 0)
+      if (Result.Num() < 0)
       {
         Title = FText::FromString(TEXT("Error!"));
         Message = FText::FromString(ErrorMessage);
       }
-      else if (Num == 0)
+      else if (Result.Num() == 0)
       {
         if (ErrorMessage.Len())
         {
@@ -76,7 +88,12 @@ void FREHelperModule::OnImportMaterialsClicked()
       else
       {
         Title = FText::FromString(TEXT("Done!"));
-        Message = FText::FromString(FString::Printf(TEXT("Imported %d materials."), Num) + ErrorMessage);
+        Message = FText::FromString(FString::Printf(TEXT("Imported %d materials."), Result.Num()) + ErrorMessage);
+        if (Result.Num())
+        {
+          IContentBrowserSingleton& ContentBrowser = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser").Get();
+          ContentBrowser.SyncBrowserToAssets(Result);
+        }
       }
       FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
     }
@@ -161,6 +178,8 @@ void FREHelperModule::OnImportActorsClicked()
         FMessageDialog::Open(EAppMsgType::Ok, FText::FromString("The file is not a valid T3D file!"), &Title);
         return;
       }
+      FScopedSlowTask Task(.0f, NSLOCTEXT("REHelper", "ImportingActors", "Importing actors..."));
+      Task.MakeDialog();
       FScopedTransaction Transaction(NSLOCTEXT("REHelper", "ImportActors", "Import Actors To Level"));
       GEditor->edactPasteSelected(GEditor->GetEditorWorldContext().World(), false, false, true, &Input);
       GEditor->SelectNone(false, true, false);
@@ -270,6 +289,61 @@ void FREHelperModule::OnFixSpeedTreesClicked()
   }
 }
 
+void FREHelperModule::OnImportCuesClicked()
+{
+  if (IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get())
+  {
+    TArray<FString> FilePaths;
+    FString Filter = TEXT("Real Editors cues|Cues.txt");
+    if (DesktopPlatform->OpenFileDialog(nullptr, TEXT("Open Real Editor's cues output..."), TEXT(""), TEXT("Cues.txt"), Filter, EFileDialogFlags::None, FilePaths) && FilePaths.Num())
+    {
+      FScopedTransaction Transaction(NSLOCTEXT("REHelper", "ImportCues", "Importing CUEs"));
+      FString ErrorMessage;
+      TArray<UObject*> Result = REWorker::ImportSoundCues(FilePaths[0], ErrorMessage);
+      if (Result.Num())
+      {
+        IContentBrowserSingleton& ContentBrowser = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser").Get();
+        ContentBrowser.SyncBrowserToAssets(Result);
+      }
+      else if (ErrorMessage.Len())
+      {
+        FText Title = FText::FromString(TEXT("Error!"));
+        FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(ErrorMessage), &Title);
+        return;
+      }
+    }
+  }
+}
+
+void FREHelperModule::OnImportSingleCueClicked()
+{
+  if (IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get())
+  {
+    TArray<FString> FilePaths;
+    FString Filter = TEXT("Real Editors Cue file|*.cue");
+    if (DesktopPlatform->OpenFileDialog(nullptr, TEXT("Open Real Editor's cue export..."), TEXT(""), TEXT("*.cue"), Filter, EFileDialogFlags::None, FilePaths) && FilePaths.Num())
+    {
+      FScopedTransaction Transaction(NSLOCTEXT("REHelper", "ImportCue", "Importing a CUE"));
+      FString ErrorMessage;
+      if (UObject* Result = REWorker::ImportSingleCue(FilePaths[0], ErrorMessage))
+      {
+        IContentBrowserSingleton& ContentBrowser = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser").Get();
+        if (ContentBrowser.HasPrimaryContentBrowser())
+        {
+          TArray<UObject*> Tmp({ Result });
+          ContentBrowser.SyncBrowserToAssets(Tmp);
+        }
+      }
+      else if (ErrorMessage.Len())
+      {
+        FText Title = FText::FromString(TEXT("Error!"));
+        FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(ErrorMessage), &Title);
+        return;
+      }
+    }
+  }
+}
+
 void FREHelperModule::RegisterMenus()
 {
   FToolMenuOwnerScoped OwnerScoped(this);
@@ -281,10 +355,13 @@ void FREHelperModule::RegisterMenus()
         auto MenuBuilder = FNewToolMenuDelegate::CreateLambda([&](UToolMenu* InSubMenu) {
           FToolMenuSection& SubMenuSection = InSubMenu->AddSection("Section", LOCTEXT("REHelperPlugin", "RE Helper"));
           SubMenuSection.AddMenuEntry(FREHelperCommands::Get().FixTextures).SetCommandList(PluginCommands);
+          SubMenuSection.AddMenuEntry(FREHelperCommands::Get().ImportCues).SetCommandList(PluginCommands);
           SubMenuSection.AddMenuEntry(FREHelperCommands::Get().ImportMaterials).SetCommandList(PluginCommands);
           SubMenuSection.AddMenuEntry(FREHelperCommands::Get().AssignDefaults).SetCommandList(PluginCommands);
           SubMenuSection.AddMenuEntry(FREHelperCommands::Get().ImportActors).SetCommandList(PluginCommands);
           SubMenuSection.AddMenuEntry(FREHelperCommands::Get().FixSpeedTrees).SetCommandList(PluginCommands);
+          SubMenuSection.AddSeparator("RE_SEP");
+          SubMenuSection.AddMenuEntry(FREHelperCommands::Get().ImportSingleCue).SetCommandList(PluginCommands);
         });
         Section.AddEntry(FToolMenuEntry::InitComboButton(
           "REHelperActions",

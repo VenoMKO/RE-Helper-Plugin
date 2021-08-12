@@ -27,6 +27,8 @@ public class REHelper : ModuleRules
 			{
 				"Core",
 				"DesktopPlatform",
+				"UnrealEd",
+				"AudioEditor",
 			}
 			);
 			

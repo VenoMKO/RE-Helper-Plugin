@@ -13,6 +13,8 @@ public:
 	void OnImportActorsClicked();
 	void OnFixTexturesClicked();
 	void OnFixSpeedTreesClicked();
+	void OnImportCuesClicked();
+	void OnImportSingleCueClicked();
 
 	/** IModuleInterface implementation */
 	void StartupModule() override;
