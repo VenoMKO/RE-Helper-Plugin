@@ -457,12 +457,13 @@ int32 REWorker::AssignDefaultMaterials(const FString& Path, FString& OutError)
           }
           FString MatName;
           Material->GetName(MatName);
-          for (; MatIdx < StaticMesh->StaticMaterials.Num(); ++MatIdx)
+          TArray<FStaticMaterial>& StaticMaterials = StaticMesh->GetStaticMaterials();
+          for (; MatIdx < StaticMaterials.Num(); ++MatIdx)
           {
-            FString SlotName = StaticMesh->StaticMaterials[MatIdx].MaterialSlotName.ToString();
+            FString SlotName = StaticMaterials[MatIdx].MaterialSlotName.ToString();
             if (!SlotName.EndsWith(TEXT("_leafs")))
             {
-              StaticMesh->StaticMaterials[MatIdx].MaterialInterface = Material;
+              StaticMaterials[MatIdx].MaterialInterface = Material;
               AnyChanges = true;
               MatIdx++;
               break;
@@ -475,12 +476,13 @@ int32 REWorker::AssignDefaultMaterials(const FString& Path, FString& OutError)
         {
           FString MatName;
           Material->GetName(MatName);
-          for (; MatIdx < StaticMesh->StaticMaterials.Num(); ++MatIdx)
+          TArray<FStaticMaterial>& StaticMaterials = StaticMesh->GetStaticMaterials();
+          for (; MatIdx < StaticMaterials.Num(); ++MatIdx)
           {
-            FString SlotName = StaticMesh->StaticMaterials[MatIdx].MaterialSlotName.ToString();
+            FString SlotName = StaticMaterials[MatIdx].MaterialSlotName.ToString();
             if (SlotName.EndsWith(TEXT("_leafs")))
             {
-              StaticMesh->StaticMaterials[MatIdx].MaterialInterface = Material;
+              StaticMaterials[MatIdx].MaterialInterface = Material;
               AnyChanges = true;
               MatIdx++;
               break;
@@ -491,11 +493,12 @@ int32 REWorker::AssignDefaultMaterials(const FString& Path, FString& OutError)
       else
       {
         // Regular static mesh
-        for (; MatIdx < StaticMesh->StaticMaterials.Num(); ++MatIdx)
+        TArray<FStaticMaterial>& StaticMaterials = StaticMesh->GetStaticMaterials();
+        for (; MatIdx < StaticMaterials.Num(); ++MatIdx)
         {
           if (MatIdx < Defaults.Num() && Defaults[MatIdx])
           {
-            StaticMesh->StaticMaterials[MatIdx].MaterialInterface = Defaults[MatIdx];
+            StaticMaterials[MatIdx].MaterialInterface = Defaults[MatIdx];
             AnyChanges = true;
           }
         }
@@ -503,12 +506,12 @@ int32 REWorker::AssignDefaultMaterials(const FString& Path, FString& OutError)
     }
     else if (USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>(Asset))
     {
-      
-      for (int32 MatIdx = 0; MatIdx < SkeletalMesh->Materials.Num(); ++MatIdx)
+      TArray<FSkeletalMaterial>& SkeletalMaterials = SkeletalMesh->GetMaterials();
+      for (int32 MatIdx = 0; MatIdx < SkeletalMaterials.Num(); ++MatIdx)
       {
         if (MatIdx < Defaults.Num() && Defaults[MatIdx])
         {
-          SkeletalMesh->Materials[MatIdx].MaterialInterface = Defaults[MatIdx];
+          SkeletalMaterials[MatIdx].MaterialInterface = Defaults[MatIdx];
           AnyChanges = true;
         }
       }

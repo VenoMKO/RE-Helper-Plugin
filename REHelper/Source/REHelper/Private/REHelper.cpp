@@ -89,11 +89,6 @@ void FREHelperModule::OnImportMaterialsClicked()
       {
         Title = FText::FromString(TEXT("Done!"));
         Message = FText::FromString(FString::Printf(TEXT("Imported %d materials."), Result.Num()) + ErrorMessage);
-        if (Result.Num())
-        {
-          IContentBrowserSingleton& ContentBrowser = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser").Get();
-          ContentBrowser.SyncBrowserToAssets(Result);
-        }
       }
       FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
     }
@@ -302,8 +297,11 @@ void FREHelperModule::OnImportCuesClicked()
       TArray<UObject*> Result = REWorker::ImportSoundCues(FilePaths[0], ErrorMessage);
       if (Result.Num())
       {
+        /* May crash Editor
         IContentBrowserSingleton& ContentBrowser = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser").Get();
-        ContentBrowser.SyncBrowserToAssets(Result);
+        ContentBrowser.SyncBrowserToAssets(Result);*/
+        FText Title = FText::FromString(TEXT("Done!"));
+        FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT("Imported %d CUEs"), Result.Num())), &Title);
       }
       else if (ErrorMessage.Len())
       {
